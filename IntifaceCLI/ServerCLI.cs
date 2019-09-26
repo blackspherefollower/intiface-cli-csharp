@@ -1,13 +1,18 @@
 ﻿using Buttplug.Core.Logging;
+using Buttplug.Core.Messages;
 using Buttplug.Devices.Configuration;
 using Buttplug.Server;
 using Buttplug.Server.Connectors;
 using Buttplug.Server.Connectors.WebsocketServer;
 using Google.Protobuf;
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Buttplug.Core;
+using Buttplug.Devices.Protocols;
 
 namespace IntifaceCLI
 {
@@ -15,11 +20,17 @@ namespace IntifaceCLI
     {
         private bool _useProtobufOutput;
         private DeviceManager _deviceManager;
+        private SimulatedDeviceManager _simManager;
+        private object _stdoutLock = new object();
         private readonly Stream _stdout = Console.OpenStandardOutput();
         private TaskCompletionSource<bool> _disconnectWait = new TaskCompletionSource<bool>();
         private readonly CancellationTokenSource _stdinTokenSource = new CancellationTokenSource();
         private Task _stdioTask;
         private bool _shouldExit;
+        
+        private event EventHandler<SimulatedDeviceAddedArgs> SimulatedDeviceAdded; 
+        private event EventHandler<SimulatedDeviceRemovedArgs> SimulatedDeviceRemoved;
+        private event EventHandler<SimulatedDeviceMsgInArgs> SimulatedDeviceMsgIn;
 
         // Simple server that exposes device manager, since we'll need to chain device managers
         // through it for this. This is required because Windows 10 has problems disconnecting from
@@ -57,6 +68,21 @@ namespace IntifaceCLI
                     {
                         var msg = ServerControlMessage.Parser.ParseDelimitedFrom(stdin);
 
+                        if (msg?.AddSimulatedDevice != null)
+                        {
+                            SimulatedDeviceAdded?.Invoke(this, new SimulatedDeviceAddedArgs(msg.AddSimulatedDevice));
+                        }
+
+                        if (msg?.RemoveSimulatedDevice != null)
+                        {
+                            SimulatedDeviceRemoved?.Invoke(this, new SimulatedDeviceRemovedArgs(msg.RemoveSimulatedDevice));
+                        }
+
+                        if (msg?.SimulatedDeviceMsgIn != null)
+                        {
+                            SimulatedDeviceMsgIn?.Invoke(this, new SimulatedDeviceMsgInArgs(msg.SimulatedDeviceMsgIn));
+                        }
+
                         if (msg?.Stop == null && !_shouldExit)
                         {
                             continue;
@@ -81,8 +107,11 @@ namespace IntifaceCLI
             {
                 return;
             }
-            var arr = aMsg.ToByteArray();
-            aMsg.WriteDelimitedTo(_stdout);
+
+            lock (_stdoutLock)
+            {
+                aMsg.WriteDelimitedTo(_stdout);
+            }
         }
 
         private void PrintProcessLog(string aLogMsg)
@@ -111,6 +140,7 @@ namespace IntifaceCLI
             {
                 _stdioTask = new Task(ReadStdio);
                 _stdioTask.Start();
+                SetupSimulator();
             }
 
             if (aOptions.GenerateCertificate)
@@ -158,6 +188,13 @@ namespace IntifaceCLI
                 if (_deviceManager == null)
                 {
                     _deviceManager = server.DeviceManager;
+
+                    // Inject our SimulatedDeviceManager before the auto scan creates a new one that we can't hook
+                    if (_useProtobufOutput)
+                    {
+                        _deviceManager.AddDeviceSubtypeManager(_simManager);
+                        _deviceManager.AddAllSubtypeManagers().Wait();
+                    }
                 }
 
                 if (logLevel != ButtplugLogLevel.Off)
@@ -282,6 +319,17 @@ namespace IntifaceCLI
             }
 
             _stdinTokenSource.Cancel();
+        }
+
+        private void SetupSimulator()
+        {
+            var logger = new ButtplugLogManager();
+            _simManager = new SimulatedDeviceManager(logger);
+
+            SimulatedDeviceAdded += _simManager.HandleDeviceAdded;
+            SimulatedDeviceRemoved += _simManager.HandleDeviceRemoved;
+            SimulatedDeviceMsgIn += _simManager.SimulatedDeviceMsgIn;
+            _simManager.SimulatedDeviceMsgOut += (aSender, aArgs) => SendProcessMessage(aArgs.serverProcessMessage);;
         }
     }
 }
