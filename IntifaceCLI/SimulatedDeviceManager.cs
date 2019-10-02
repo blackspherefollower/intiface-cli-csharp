@@ -54,7 +54,7 @@ namespace IntifaceCLI
         }
     }
 
-    internal class SimulatedDevice : IButtplugDevice
+    public class SimulatedDevice : IButtplugDeviceImpl
     {
         private bool connected = true;
         private string id;
@@ -96,16 +96,72 @@ namespace IntifaceCLI
             MessageEmitted?.Invoke(this, new MessageReceivedEventArgs(aMsg));
         }
 
+        public Task WriteValueAsync(byte[] aValue, CancellationToken aToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task WriteValueAsync(byte[] aValue, ButtplugDeviceWriteOptions aOptions = null, CancellationToken aToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<byte[]> ReadValueAsync(CancellationToken aToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<byte[]> ReadValueAsync(ButtplugDeviceReadOptions aOptions = null, CancellationToken aToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task SubscribeToUpdatesAsync(ButtplugDeviceReadOptions aOptions = null)
+        {
+            throw new NotImplementedException();
+        }
+
         public string Name => name;
         public string Identifier => id;
         public bool Connected => connected;
         private SimulatedDeviceManager manager;
         public IEnumerable<Type> AllowedMessageTypes => desc.Keys;
 
-        bool IButtplugDevice.Connected => connected;
+        public string Address => $"simulated-device-{Identifier}";
 
         public event EventHandler DeviceRemoved;
         public event EventHandler<MessageReceivedEventArgs> MessageEmitted;
+        public event EventHandler<ButtplugDeviceDataEventArgs> DataReceived;
+    }
+
+    public class SimulatedProtocol : IButtplugDeviceProtocol
+    {
+
+        private SimulatedDevice _dev;
+
+        public SimulatedProtocol(SimulatedDevice aDev)
+        {
+            _dev = aDev;
+        }
+
+        public string Name => _dev.Name;
+
+        public IEnumerable<Type> AllowedMessageTypes => _dev.AllowedMessageTypes;
+
+        public MessageAttributes GetMessageAttrs(Type aMsg)
+        {
+            return _dev.GetMessageAttrs(aMsg);
+        }
+
+        public async Task InitializeAsync(CancellationToken aToken = default(CancellationToken))
+        {
+            await _dev.InitializeAsync(aToken);
+        }
+
+        public async Task<ButtplugMessage> ParseMessageAsync(ButtplugDeviceMessage aMsg, CancellationToken aToken = default(CancellationToken))
+        {
+            return await _dev.ParseMessageAsync(aMsg, aToken);
+        }
     }
 
     internal class SimulatedDeviceManager : TimedScanDeviceSubtypeManager
@@ -135,7 +191,7 @@ namespace IntifaceCLI
                     }
 
                     _pendingDevices.TryRemove(dev.Identifier, out _);
-                    InvokeDeviceAdded(new DeviceAddedEventArgs(dev));
+                    InvokeDeviceAdded(new DeviceAddedEventArgs(new ButtplugDevice(LogManager, new SimulatedProtocol(dev), dev)));
                 }
             }
         }
@@ -144,7 +200,7 @@ namespace IntifaceCLI
         {
             lock (devLock)
             {
-                if (_devices.TryGetValue(dev.Identifier, out var old))
+                if (_devices.TryRemove(dev.Identifier, out var old))
                 {
                     old.Disconnect();
                 }
